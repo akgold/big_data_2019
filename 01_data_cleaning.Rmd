@@ -1,0 +1,46 @@
+---
+title: "Setup Sparklyr Environment"
+author: "Alex Gold"
+date: "6/7/2019"
+output: html_document
+---
+
+```{r}
+library(sparklyr)
+library(tidyverse)
+library(magrittr)
+```
+# Read In
+```{r}
+df <- readr::read_csv(here::here("data/10100125.csv")) %>%
+  rename_all(tolower) %>%
+  rename_all(function(x) stringr::str_replace_all(x, " ", "_"))
+```
+
+# Clean
+```{r}
+df %<>%
+  filter(uom == "Index, 2000=1000" & 
+           !str_detect(toronto_stock_exchange_statistics, "Composite")) %>%
+  transmute(year = substr(ref_date, 1, 4) %>% as.integer(),
+            month = substr(ref_date, 6, nchar(ref_date)) %>% as.integer(),
+            date = paste0(ref_date, "-01"),
+            series = toronto_stock_exchange_statistics %>%
+           stringr::str_remove_all("Standard and Poor's/Toronto Stock Exchange ") %>%
+             stringr::str_remove_all("Toronto Stock Exchange, ") %>%
+             stringr::str_remove_all(",") %>%
+             stringr::str_to_title(), 
+           value)
+```
+
+# Save as CSV
+```{r}
+readr::write_csv(df, here::here("data/cleaned.csv"))
+
+df %>%
+  mutate(series = str_remove_all(series, " Closing Quotations") %>%
+           tolower() %>%
+           str_trim("both")) %>%
+  tidyr::spread(series, value) %>% 
+  readr::write_csv(here::here("data/cleaned_wide.csv"))
+```

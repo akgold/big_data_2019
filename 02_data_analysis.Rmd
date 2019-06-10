@@ -1,0 +1,132 @@
+---
+title: "Sparklyr Stock Analysis"
+output: html_notebook
+---
+
+# Connect and Load Data
+```{r}
+library(sparklyr)
+library(tidyverse)
+library(corrr)
+```
+
+```{r}
+sc <- spark_connect(master = "local")
+df <- spark_read_csv(sc, here::here("data/cleaned_wide.csv"), name = "stocks")
+```
+
+# Check the Different Series
+Monthly stock data
+```{sql, connection = sc}
+SELECT * FROM stocks LIMIT 5
+```
+
+```{sql, connection = sc}
+SELECT min(year), max(year) FROM stocks
+```
+
+
+# Take a look at growth over time
+Collapsed to annual
+```{r}
+(yearly <- df %>%
+   select(-month, -date) %>%
+   group_by(year) %>%
+   summarize_all(mean, na.rm = TRUE) %>%
+   arrange(year) %>%
+   # Pull back into R from db
+   collect()) 
+```
+
+## Hold up, how did that work?!?
+```{r}
+df %>%
+  select(-month, -date) %>%
+  group_by(year) %>%
+  summarize_all(mean, na.rm = TRUE) %>%
+  arrange(year) %>%
+  show_query()
+```
+
+# Make a plot!
+```{r}
+yearly %>%
+  gather("series", "value", -year) %>%
+  mutate(series = stringr::str_wrap(series, 25)) %>%
+  ggplot(aes(x = year, y = value, color = series)) +
+  geom_line() +
+  facet_wrap("series") +
+  theme(legend.position = "none") +
+  scale_y_continuous(labels = scales::comma)
+```
+
+<!-- ```{r} -->
+<!-- df %>% -->
+<!--   dbplot::dbplot_histogram(oil_and_gas)  -->
+<!-- ``` -->
+
+# Add lagged values to series for prediction
+```{r}
+df_lags <- df %>%
+   arrange(year, month) %>%
+   mutate_at(vars(-year, -month, -date), lag) %>%
+   rename_at(vars(-year, -month, -date), function(x) paste0(x, "_lag")) %>%
+   filter(!is.na(oil_and_gas_lag))
+
+df_model <- inner_join(df, df_lags) %>% sdf_register("model_dat")
+df_model
+```
+
+# Define Functions
+```{r}
+do_reg <- function(var) {
+  df_model %>%
+    select(year,
+           month, 
+           !!var, 
+           ends_with("_lag")) %>%
+    mutate(month = paste0("month_", month)) %>%
+    ml_linear_regression(as.formula(glue::glue("{var} ~ .")))
+}
+```
+
+# Model Options
+```{r}
+ls("package:sparklyr") %>% 
+  keep(function(x) str_detect(x, "^ml_"))
+```
+
+
+# Fit Models
+```{r}
+series <- c("financial_services",
+             "gold_and_silver",
+             "merchandising",
+             "metals_and_minerals",
+             "oil_and_gas",
+             "paper_and_forest_products",
+             "utilities")
+
+mods <- map(series, do_reg)
+names(mods) <- series
+```
+
+```{r}
+preds <- mods %>%
+  imap(function(mod, name){
+    mod %>%
+      predict() %>%
+      enframe(name = "months", 
+              value = paste0(name, "_pred")) %>%
+      mutate(month = months %% 12 + 1, 
+             year = 1956 + months %/% 12) %>%
+      select(-months)
+  })
+
+preds <- reduce(preds, inner_join)
+
+preds <- copy_to(sc, preds, overwrite = TRUE)
+```
+
+
+
