@@ -34,7 +34,7 @@ Collapsed to annual
    group_by(year) %>%
    summarize_all(mean, na.rm = TRUE) %>%
    arrange(year) %>%
-   # Pull back into R from db
+   # Pull back into R from spark
    collect()) 
 ```
 
@@ -60,11 +60,6 @@ yearly %>%
   scale_y_continuous(labels = scales::comma)
 ```
 
-<!-- ```{r} -->
-<!-- df %>% -->
-<!--   dbplot::dbplot_histogram(oil_and_gas)  -->
-<!-- ``` -->
-
 # Add lagged values to series for prediction
 ```{r}
 df_lags <- df %>%
@@ -73,29 +68,24 @@ df_lags <- df %>%
    rename_at(vars(-year, -month, -date), function(x) paste0(x, "_lag")) %>%
    filter(!is.na(oil_and_gas_lag))
 
-df_model <- inner_join(df, df_lags) %>% sdf_register("model_dat")
+df_model <- inner_join(df, df_lags) %>% 
+  sdf_register("model_dat")
 df_model
 ```
 
 # Define Functions
 ```{r}
-do_reg <- function(var) {
+fit_mod <- function(var) {
   df_model %>%
-    select(year,
+    select(!!var, 
+           year,
            month, 
-           !!var, 
            ends_with("_lag")) %>%
     mutate(month = paste0("month_", month)) %>%
+    # Use SparkML
     ml_linear_regression(as.formula(glue::glue("{var} ~ .")))
 }
 ```
-
-# Model Options
-```{r}
-ls("package:sparklyr") %>% 
-  keep(function(x) str_detect(x, "^ml_"))
-```
-
 
 # Fit Models
 ```{r}
@@ -107,7 +97,7 @@ series <- c("financial_services",
              "paper_and_forest_products",
              "utilities")
 
-mods <- map(series, do_reg)
+mods <- map(series, fit_mod)
 names(mods) <- series
 ```
 
